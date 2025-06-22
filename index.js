@@ -39,6 +39,7 @@ mongoose.connect(process.env.MONGO_URI || 'mongodb://localhost:27017/rastreament
 
 // Middleware de autenticação JWT
 const authenticateToken = (req, res, next) => {
+  
   const token = req.cookies.token || req.headers.authorization?.split(' ')[1];
 
   if (!token) {
@@ -116,15 +117,13 @@ app.post('/api/auth/login', async (req, res) => {
       process.env.JWT_SECRET || 'sua-chave-secreta',
       { expiresIn: '7d' }
     );
-
+  //      sameSite: 'strict', alterado para permitir ser mais permissiva entre subdomínios, trocando  como estamos com back em um local 
+      // lembrar caso alteremos!
     // Configurar cookie HttpOnly
     res.cookie('token', token, {
       httpOnly: true,
       secure: process.env.NODE_ENV === 'production',
-      sameSite: 'none',
-      //      sameSite: 'strict', alterado para permitir ser mais permissiva entre subdomínios, trocando  como estamos com back em um local 
-      // lembrar caso alteremos!
-
+      sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax',
       maxAge: 7 * 24 * 60 * 60 * 1000 // 7 dias
     });
 
@@ -306,5 +305,5 @@ app.patch('/api/users/me/avatar', authenticateToken, async (req, res) => {
 
 const PORT = process.env.PORT || 4000;
 server.listen(PORT, () => {
-  // console.log(`Servidor rodando na porta ${PORT}`);
+  console.log(`Servidor rodando na porta ${PORT}`);
 }); 
