@@ -8,6 +8,7 @@ const { createServer } = require('http');
 const { Server } = require('socket.io');
 require('dotenv').config();
 const Location = require('./models/Location');
+const User = require('./models/User');
 
 const app = express();
 const server = createServer(app);
@@ -35,33 +36,6 @@ app.get('/test', (req, res) => {
 mongoose.connect(process.env.MONGO_URI || 'mongodb://localhost:27017/rastreamento-gps')
   .then(() => console.log('Conectado ao MongoDB'))
   .catch(err => console.error('Erro ao conectar ao MongoDB:', err));
-
-// Modelo de usuário
-const userSchema = new mongoose.Schema({
-  nome: {
-    type: String,
-    required: true,
-    unique: true,
-    trim: true,
-    minlength: 2,
-    maxlength: 50
-  },
-  senha: {
-    type: String,
-    required: true,
-    minlength: 6
-  },
-  isAdmin: {
-    type: Boolean,
-    default: false
-  },
-  createdAt: {
-    type: Date,
-    default: Date.now
-  }
-});
-
-const User = mongoose.model('User', userSchema);
 
 // Middleware de autenticação JWT
 const authenticateToken = (req, res, next) => {
@@ -301,6 +275,31 @@ app.get('/api/locations', authenticateToken, async (req, res) => {
     res.json({ locations });
   } catch (error) {
     console.error('Erro ao buscar histórico de localizações:', error);
+    res.status(500).json({ message: 'Erro interno do servidor' });
+  }
+});
+
+// Nova rota para atualizar avatar
+app.patch('/api/users/me/avatar', authenticateToken, async (req, res) => {
+  try {
+    const { avatar } = req.body;
+    if (!avatar) {
+      return res.status(400).json({ message: 'URL do avatar não fornecida' });
+    }
+
+    const user = await User.findByIdAndUpdate(
+      req.user.id,
+      { avatar },
+      { new: true }
+    ).select('-senha');
+
+    if (!user) {
+      return res.status(404).json({ message: 'Usuário não encontrado' });
+    }
+
+    res.json({ message: 'Avatar atualizado com sucesso', user });
+  } catch (error) {
+    console.error('Erro ao atualizar avatar:', error);
     res.status(500).json({ message: 'Erro interno do servidor' });
   }
 });
