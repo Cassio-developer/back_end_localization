@@ -8,6 +8,7 @@ const { createServer } = require('http');
 const { Server } = require('socket.io');
 require('dotenv').config();
 const Location = require('./models/Location');
+const User = require('./models/User');
 
 const app = express();
 const server = createServer(app);
@@ -36,35 +37,9 @@ mongoose.connect(process.env.MONGO_URI || 'mongodb://localhost:27017/rastreament
   .then(() => console.log('Conectado ao MongoDB'))
   .catch(err => console.error('Erro ao conectar ao MongoDB:', err));
 
-// Modelo de usuário
-const userSchema = new mongoose.Schema({
-  nome: {
-    type: String,
-    required: true,
-    unique: true,
-    trim: true,
-    minlength: 2,
-    maxlength: 50
-  },
-  senha: {
-    type: String,
-    required: true,
-    minlength: 6
-  },
-  isAdmin: {
-    type: Boolean,
-    default: false
-  },
-  createdAt: {
-    type: Date,
-    default: Date.now
-  }
-});
-
-const User = mongoose.model('User', userSchema);
-
 // Middleware de autenticação JWT
 const authenticateToken = (req, res, next) => {
+  
   const token = req.cookies.token || req.headers.authorization?.split(' ')[1];
 
   if (!token) {
@@ -142,15 +117,13 @@ app.post('/api/auth/login', async (req, res) => {
       process.env.JWT_SECRET || 'sua-chave-secreta',
       { expiresIn: '7d' }
     );
-
+  //      sameSite: 'strict', alterado para permitir ser mais permissiva entre subdomínios, trocando  como estamos com back em um local 
+      // lembrar caso alteremos!
     // Configurar cookie HttpOnly
     res.cookie('token', token, {
       httpOnly: true,
       secure: process.env.NODE_ENV === 'production',
-      sameSite: 'none',
-      //      sameSite: 'strict', alterado para permitir ser mais permissiva entre subdomínios, trocando  como estamos com back em um local 
-      // lembrar caso alteremos!
-
+      sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax',
       maxAge: 7 * 24 * 60 * 60 * 1000 // 7 dias
     });
 
@@ -305,7 +278,32 @@ app.get('/api/locations', authenticateToken, async (req, res) => {
   }
 });
 
+// Nova rota para atualizar avatar
+app.patch('/api/users/me/avatar', authenticateToken, async (req, res) => {
+  try {
+    const { avatar } = req.body;
+    if (!avatar) {
+      return res.status(400).json({ message: 'URL do avatar não fornecida' });
+    }
+
+    const user = await User.findByIdAndUpdate(
+      req.user.id,
+      { avatar },
+      { new: true }
+    ).select('-senha');
+
+    if (!user) {
+      return res.status(404).json({ message: 'Usuário não encontrado' });
+    }
+
+    res.json({ message: 'Avatar atualizado com sucesso', user });
+  } catch (error) {
+    console.error('Erro ao atualizar avatar:', error);
+    res.status(500).json({ message: 'Erro interno do servidor' });
+  }
+});
+
 const PORT = process.env.PORT || 4000;
 server.listen(PORT, () => {
-  // console.log(`Servidor rodando na porta ${PORT}`);
+  console.log(`Servidor rodando na porta ${PORT}`);
 }); 
