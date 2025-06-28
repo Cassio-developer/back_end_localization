@@ -195,7 +195,29 @@ app.post('/api/auth/login', async (req, res) => {
 });
 
 app.post('/api/auth/logout', (req, res) => {
-  res.clearCookie('token');
+  console.log('Logout solicitado - Origin:', req.headers.origin);
+  
+  // Limpar o cookie com as mesmas opções usadas no login
+  const cookieOptions = {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === 'production',
+    sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax',
+    path: '/', // Garantir que o path seja o mesmo
+    expires: new Date(0), // Forçar expiração imediata
+    maxAge: 0 // Forçar expiração imediata
+  };
+  
+  console.log('Opções do cookie para limpeza:', cookieOptions);
+  
+  res.clearCookie('token', cookieOptions);
+  
+  // Adicionar headers adicionais para garantir que o cookie seja removido
+  res.setHeader('Set-Cookie', [
+    'token=; Path=/; Expires=Thu, 01 Jan 1970 00:00:00 GMT; HttpOnly; ' + 
+    (process.env.NODE_ENV === 'production' ? 'Secure; SameSite=None' : 'SameSite=Lax')
+  ]);
+  
+  console.log('Cookie removido com sucesso');
   res.json({ message: 'Logout realizado com sucesso' });
 });
 
