@@ -12,17 +12,68 @@ const User = require('./models/User');
 
 const app = express();
 const server = createServer(app);
+
+// Configuração de CORS mais flexível
+const allowedOrigins = [
+  'http://localhost:3000',
+  'https://live-tracking-app-world.vercel.app',
+  'https://live-tracking-app-world.vercel.app/',
+  'https://*.vercel.app',
+  'https://*.vercel.app/',
+  process.env.FRONTEND_URL
+].filter(Boolean); // Remove valores undefined/null
+
+// Função para verificar se a origem é permitida
+const isOriginAllowed = (origin) => {
+  if (!origin) return true; // Permitir requests sem origin
+  
+  // Verificar se a origem está na lista de permitidas
+  return allowedOrigins.some(allowedOrigin => {
+    // Remover barra final para comparação
+    const cleanOrigin = origin.replace(/\/$/, '');
+    const cleanAllowed = allowedOrigin.replace(/\/$/, '');
+    
+    // Se o allowedOrigin tem wildcard, usar regex
+    if (cleanAllowed.includes('*')) {
+      const regex = new RegExp(cleanAllowed.replace('*', '.*'));
+      return regex.test(cleanOrigin);
+    }
+    
+    return cleanOrigin === cleanAllowed;
+  });
+};
+
 const io = new Server(server, {
   cors: {
-    origin: process.env.FRONTEND_URL || "http://localhost:3000",
+    origin: function (origin, callback) {
+      console.log('Socket.io CORS check - Origin:', origin);
+      
+      if (isOriginAllowed(origin)) {
+        callback(null, true);
+      } else {
+        console.log('Socket.io CORS blocked - Origin:', origin);
+        callback(new Error('Not allowed by CORS'));
+      }
+    },
     credentials: true
   }
 });
 
 // Middleware
 app.use(cors({
-  origin: process.env.FRONTEND_URL || "http://localhost:3000",
-  credentials: true
+  origin: function (origin, callback) {
+    console.log('Express CORS check - Origin:', origin);
+    
+    if (isOriginAllowed(origin)) {
+      callback(null, true);
+    } else {
+      console.log('Express CORS blocked - Origin:', origin);
+      callback(new Error('Not allowed by CORS'));
+    }
+  },
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With']
 }));
 app.use(express.json());
 app.use(cookieParser());
@@ -123,8 +174,8 @@ app.post('/api/auth/login', async (req, res) => {
     res.cookie('token', token, {
       httpOnly: true,
       secure: process.env.NODE_ENV === 'production',
-      // sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax',
-      sameSite: 'none',
+      sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax',
+      // sameSite: 'none',
  
       maxAge: 7 * 24 * 60 * 60 * 1000 // 7 dias
     });
