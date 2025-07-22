@@ -282,9 +282,20 @@ app.patch('/api/users/:id/promote', authenticateToken, requireAdmin, async (req,
 
 // Socket.io para rastreamento em tempo real
 const localizacoes = {};
+const usuariosConectados = {};
 
 io.on('connection', (socket) => {
-  // console.log('Usuário conectado:', socket.id);
+  // Recebe identificação do usuário
+  socket.on('identificacao', (userData) => {
+    usuariosConectados[socket.id] = {
+      ...userData,
+      socketId: socket.id
+    };
+    // Se for admin, envie a lista de conectados
+    if (userData.isAdmin) {
+      socket.emit('usuariosConectados', Object.values(usuariosConectados));
+    }
+  });
 
   // Enviar localizações atuais para o novo usuário
   socket.emit('localizacoes', localizacoes);
@@ -295,7 +306,6 @@ io.on('connection', (socket) => {
       ...data,
       timestamp: Date.now()
     };
-
     // Enviar para todos os outros usuários
     socket.broadcast.emit('localizacao', {
       id: socket.id,
@@ -305,10 +315,14 @@ io.on('connection', (socket) => {
 
   // Usuário desconectado
   socket.on('disconnect', () => {
-    // console.log('Usuário desconectado:', socket.id);
     delete localizacoes[socket.id];
-
-    // Notificar outros usuários
+    delete usuariosConectados[socket.id];
+    // Notificar admins conectados sobre a saída (opcional)
+    // Object.values(usuariosConectados).forEach(user => {
+    //   if (user.isAdmin) {
+    //     io.to(user.socketId).emit('usuariosConectados', Object.values(usuariosConectados));
+    //   }
+    // });
     socket.broadcast.emit('usuarioDesconectado', socket.id);
   });
 });
