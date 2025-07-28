@@ -280,19 +280,239 @@ app.patch('/api/users/:id/promote', authenticateToken, requireAdmin, async (req,
 //   }
 // });
 
+// ===== ROTAS DE AUTENTICAÇÃO FACIAL =====
+
+// Rota para registrar dados faciais do usuário
+app.post('/api/auth/register-face', authenticateToken, async (req, res) => {
+  try {
+    const { descriptors } = req.body;
+    
+    if (!descriptors || !Array.isArray(descriptors) || descriptors.length === 0) {
+      return res.status(400).json({ message: 'Dados faciais inválidos' });
+    }
+
+    // Atualizar usuário com dados faciais
+    const user = await User.findByIdAndUpdate(
+      req.user.id,
+      { 
+        faceDescriptors: descriptors,
+        faceDataUpdatedAt: new Date()
+      },
+      { new: true }
+    ).select('-senha +faceDescriptors');
+
+    if (!user) {
+      return res.status(404).json({ message: 'Usuário não encontrado' });
+    }
+
+    console.log('✅ Dados faciais registrados para usuário:', user.nome, 'descriptors:', user.faceDescriptors ? user.faceDescriptors.length : 0);
+    res.json({ 
+      success: true,
+      message: 'Dados faciais registrados com sucesso',
+      userId: user._id
+    });
+  } catch (error) {
+    console.error('❌ Erro ao registrar dados faciais:', error);
+    res.status(500).json({ message: 'Erro interno do servidor' });
+  }
+});
+
+// Rota para login com reconhecimento facial
+app.post('/api/auth/face-login', async (req, res) => {
+  try {
+    const { descriptor } = req.body;
+    
+    if (!descriptor || !Array.isArray(descriptor)) {
+      return res.status(400).json({ message: 'Dados faciais inválidos' });
+    }
+
+    // Buscar todos os usuários com dados faciais
+    const users = await User.find({ 
+      faceDescriptors: { $exists: true, $ne: [] }
+    }).select('-senha +faceDescriptors');
+
+    if (users.length === 0) {
+      return res.status(401).json({ message: 'Nenhum usuário com dados faciais encontrado' });
+    }
+
+    // Função para calcular distância euclidiana
+    const euclideanDistance = (desc1, desc2) => {
+      if (desc1.length !== desc2.length) return Infinity;
+      let sum = 0;
+      for (let i = 0; i < desc1.length; i++) {
+        sum += Math.pow(desc1[i] - desc2[i], 2);
+      }
+      return Math.sqrt(sum);
+    };
+
+    // Comparar com todos os usuários
+    let bestMatch = null;
+    let bestDistance = Infinity;
+    const threshold = 0.6; // Limiar de similaridade
+
+    for (const user of users) {
+      for (const storedDescriptor of user.faceDescriptors) {
+        const distance = euclideanDistance(descriptor, storedDescriptor);
+        if (distance < bestDistance) {
+          bestDistance = distance;
+          bestMatch = user;
+        }
+      }
+    }
+
+    if (!bestMatch || bestDistance > threshold) {
+      return res.status(401).json({ message: 'Face não reconhecida' });
+    }
+
+    // Gerar token JWT
+    const token = jwt.sign(
+      { id: bestMatch._id, nome: bestMatch.nome, isAdmin: bestMatch.isAdmin },
+      process.env.JWT_SECRET || 'sua-chave-secreta',
+      { expiresIn: '7d' }
+    );
+
+    // Configurar cookie
+    const cookieOptions = {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === 'production',
+      sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax',
+      maxAge: 7 * 24 * 60 * 60 * 1000 // 7 dias
+    };
+
+    res.cookie('token', token, cookieOptions);
+
+    console.log('✅ Login facial realizado para usuário:', bestMatch.nome);
+    res.json({
+      success: true,
+      message: 'Login realizado com sucesso',
+      user: {
+        id: bestMatch._id,
+        nome: bestMatch.nome,
+        isAdmin: bestMatch.isAdmin,
+        avatar: bestMatch.avatar
+      },
+      token
+    });
+  } catch (error) {
+    console.error('❌ Erro no login facial:', error);
+    res.status(500).json({ message: 'Erro interno do servidor' });
+  }
+});
+
+// Rota para verificar se usuário tem dados faciais
+app.get('/api/auth/face-data', authenticateToken, async (req, res) => {
+  try {
+    const user = await User.findById(req.user.id).select('-senha +faceDescriptors');
+    
+    if (!user) {
+      return res.status(404).json({ message: 'Usuário não encontrado' });
+    }
+
+    const hasFaceData = user.faceDescriptors && user.faceDescriptors.length > 0;
+    
+    console.log('🔍 Verificando dados faciais para usuário:', user.nome, 'hasFaceData:', hasFaceData, 'descriptors:', user.faceDescriptors ? user.faceDescriptors.length : 0);
+    
+    res.json({
+      success: true,
+      hasFaceData,
+      message: hasFaceData ? 'Usuário possui dados faciais' : 'Usuário não possui dados faciais'
+    });
+  } catch (error) {
+    console.error('❌ Erro ao verificar dados faciais:', error);
+    res.status(500).json({ message: 'Erro interno do servidor' });
+  }
+});
+
+// Rota para remover dados faciais
+app.delete('/api/auth/remove-face', authenticateToken, async (req, res) => {
+  try {
+    const user = await User.findByIdAndUpdate(
+      req.user.id,
+      { 
+        $unset: { faceDescriptors: 1, faceDataUpdatedAt: 1 }
+      },
+      { new: true }
+    ).select('-senha');
+
+    if (!user) {
+      return res.status(404).json({ message: 'Usuário não encontrado' });
+    }
+
+    console.log('✅ Dados faciais removidos para usuário:', user.nome);
+    res.json({
+      success: true,
+      message: 'Dados faciais removidos com sucesso'
+    });
+  } catch (error) {
+    console.error('❌ Erro ao remover dados faciais:', error);
+    res.status(500).json({ message: 'Erro interno do servidor' });
+  }
+});
+
+// Rota para atualizar dados faciais
+app.put('/api/auth/update-face', authenticateToken, async (req, res) => {
+  try {
+    const { descriptors } = req.body;
+    
+    if (!descriptors || !Array.isArray(descriptors) || descriptors.length === 0) {
+      return res.status(400).json({ message: 'Dados faciais inválidos' });
+    }
+
+    const user = await User.findByIdAndUpdate(
+      req.user.id,
+      { 
+        faceDescriptors: descriptors,
+        faceDataUpdatedAt: new Date()
+      },
+      { new: true }
+    ).select('-senha +faceDescriptors');
+
+    if (!user) {
+      return res.status(404).json({ message: 'Usuário não encontrado' });
+    }
+
+    console.log('✅ Dados faciais atualizados para usuário:', user.nome, 'descriptors:', user.faceDescriptors ? user.faceDescriptors.length : 0);
+    res.json({
+      success: true,
+      message: 'Dados faciais atualizados com sucesso'
+    });
+  } catch (error) {
+    console.error('❌ Erro ao atualizar dados faciais:', error);
+    res.status(500).json({ message: 'Erro interno do servidor' });
+  }
+});
+
+// ===== FIM DAS ROTAS DE AUTENTICAÇÃO FACIAL =====
+
 // Socket.io para rastreamento em tempo real
 const localizacoes = {};
 const usuariosConectados = {};
 
 io.on('connection', (socket) => {
+  console.log('🔌 Nova conexão socket:', socket.id);
+  
   // Recebe identificação do usuário
   socket.on('identificacao', (userData) => {
+    console.log('👤 Usuário identificado:', userData.nome, 'Admin:', userData.isAdmin, 'Socket:', socket.id);
+    
     usuariosConectados[socket.id] = {
       ...userData,
       socketId: socket.id
     };
-    // Se for admin, envie a lista de conectados
+    
+    console.log('📊 Total de usuários conectados:', Object.keys(usuariosConectados).length);
+    
+    // Notificar TODOS os admins sobre a nova conexão
+    Object.values(usuariosConectados).forEach(user => {
+      if (user.isAdmin && user.socketId !== socket.id) {
+        console.log('📢 Notificando admin:', user.nome, 'sobre nova conexão');
+        io.to(user.socketId).emit('usuariosConectados', Object.values(usuariosConectados));
+      }
+    });
+    
+    // Se o usuário que acabou de conectar é admin, envie a lista completa
     if (userData.isAdmin) {
+      console.log('👑 Admin conectado, enviando lista de usuários:', Object.values(usuariosConectados).length);
       socket.emit('usuariosConectados', Object.values(usuariosConectados));
     }
   });
@@ -315,14 +535,22 @@ io.on('connection', (socket) => {
 
   // Usuário desconectado
   socket.on('disconnect', () => {
+    const userInfo = usuariosConectados[socket.id];
+    console.log('🔌 Usuário desconectado:', userInfo?.nome || 'Desconhecido', 'Socket:', socket.id);
+    
     delete localizacoes[socket.id];
     delete usuariosConectados[socket.id];
-    // Notificar admins conectados sobre a saída (opcional)
-    // Object.values(usuariosConectados).forEach(user => {
-    //   if (user.isAdmin) {
-    //     io.to(user.socketId).emit('usuariosConectados', Object.values(usuariosConectados));
-    //   }
-    // });
+    
+    console.log('📊 Total de usuários conectados após desconexão:', Object.keys(usuariosConectados).length);
+    
+    // Notificar TODOS os admins sobre a desconexão
+    Object.values(usuariosConectados).forEach(user => {
+      if (user.isAdmin) {
+        console.log('📢 Notificando admin:', user.nome, 'sobre desconexão');
+        io.to(user.socketId).emit('usuariosConectados', Object.values(usuariosConectados));
+      }
+    });
+    
     socket.broadcast.emit('usuarioDesconectado', socket.id);
   });
 });
