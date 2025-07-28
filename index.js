@@ -326,6 +326,12 @@ app.post('/api/auth/face-login', async (req, res) => {
       return res.status(400).json({ message: 'Dados faciais inválidos' });
     }
 
+    // Verificar se o descritor tem o tamanho correto (128 valores para face-api.js)
+    if (descriptor.length !== 128) {
+      console.log(`❌ Descritor facial inválido - Tamanho: ${descriptor.length}`);
+      return res.status(400).json({ message: 'Dados faciais inválidos' });
+    }
+
     // Buscar todos os usuários com dados faciais
     const users = await User.find({ 
       faceDescriptors: { $exists: true, $ne: [] }
@@ -333,6 +339,19 @@ app.post('/api/auth/face-login', async (req, res) => {
 
     if (users.length === 0) {
       return res.status(401).json({ message: 'Nenhum usuário com dados faciais encontrado' });
+    }
+
+    // Verificar se há pelo menos um descritor válido no sistema
+    let totalDescriptors = 0;
+    for (const user of users) {
+      if (user.faceDescriptors && Array.isArray(user.faceDescriptors)) {
+        totalDescriptors += user.faceDescriptors.length;
+      }
+    }
+
+    if (totalDescriptors === 0) {
+      console.log('❌ Nenhum descritor facial válido encontrado no sistema');
+      return res.status(401).json({ message: 'Sistema de reconhecimento facial não configurado' });
     }
 
     // Função para calcular distância euclidiana
@@ -345,23 +364,96 @@ app.post('/api/auth/face-login', async (req, res) => {
       return Math.sqrt(sum);
     };
 
-    // Comparar com todos os usuários
+    // Validação rigorosa com múltiplos critérios
     let bestMatch = null;
     let bestDistance = Infinity;
-    const threshold = 0.6; // Limiar de similaridade
+    let bestUserScores = [];
+    const threshold = 0.45; // Limiar equilibrado entre segurança e usabilidade
+    const minConfidence = 0.75; // Confiança mínima de 75%
+
+    console.log(`🔍 Comparando face com ${users.length} usuários...`);
 
     for (const user of users) {
-      for (const storedDescriptor of user.faceDescriptors) {
+      if (!user.faceDescriptors || !Array.isArray(user.faceDescriptors)) {
+        console.log(`⚠️ Usuário ${user.nome} não tem descritores válidos`);
+        continue;
+      }
+
+      const userDistances = [];
+      let userBestDistance = Infinity;
+
+      // Comparar com todos os descritores do usuário
+      for (let i = 0; i < user.faceDescriptors.length; i++) {
+        const storedDescriptor = user.faceDescriptors[i];
+        if (!Array.isArray(storedDescriptor) || storedDescriptor.length !== 128) {
+          console.log(`⚠️ Descritor inválido para usuário ${user.nome} - índice ${i}`);
+          continue;
+        }
+
         const distance = euclideanDistance(descriptor, storedDescriptor);
-        if (distance < bestDistance) {
-          bestDistance = distance;
-          bestMatch = user;
+        userDistances.push(distance);
+        
+        if (distance < userBestDistance) {
+          userBestDistance = distance;
+        }
+
+        console.log(`📊 ${user.nome} - Descritor ${i + 1}: ${distance.toFixed(4)}`);
+      }
+
+      // Calcular confiança baseada na consistência dos descritores
+      if (userDistances.length > 0) {
+        const avgDistance = userDistances.reduce((a, b) => a + b, 0) / userDistances.length;
+        const consistency = 1 - (Math.max(...userDistances) - Math.min(...userDistances));
+        const confidence = Math.max(0, 1 - avgDistance) * consistency;
+
+        console.log(`📈 ${user.nome} - Média: ${avgDistance.toFixed(4)}, Consistência: ${consistency.toFixed(4)}, Confiança: ${confidence.toFixed(4)}`);
+
+        // Critérios equilibrados para aceitar o match
+        if (userBestDistance < threshold && 
+            avgDistance < threshold * 1.3 && 
+            confidence > minConfidence &&
+            consistency > 0.6) {
+          
+          if (userBestDistance < bestDistance) {
+            bestDistance = userBestDistance;
+            bestMatch = user;
+            bestUserScores = {
+              bestDistance: userBestDistance,
+              avgDistance: avgDistance,
+              confidence: confidence,
+              consistency: consistency
+            };
+          }
         }
       }
     }
 
-    if (!bestMatch || bestDistance > threshold) {
+    // Validação rigorosa com múltiplos critérios
+    if (!bestMatch) {
+      console.log(`❌ Nenhum usuário atende aos critérios rigorosos`);
       return res.status(401).json({ message: 'Face não reconhecida' });
+    }
+
+    // Verificações finais de segurança
+    if (bestDistance > threshold) {
+      console.log(`❌ Melhor distância (${bestDistance.toFixed(4)}) acima do threshold (${threshold})`);
+      return res.status(401).json({ message: 'Face não reconhecida' });
+    }
+
+    if (bestUserScores.confidence < minConfidence) {
+      console.log(`❌ Confiança muito baixa: ${bestUserScores.confidence.toFixed(4)} < ${minConfidence}`);
+      return res.status(401).json({ message: 'Face não reconhecida com confiança suficiente' });
+    }
+
+    if (bestUserScores.consistency < 0.6) {
+      console.log(`❌ Consistência muito baixa: ${bestUserScores.consistency.toFixed(4)} < 0.6`);
+      return res.status(401).json({ message: 'Face não reconhecida com consistência suficiente' });
+    }
+
+    // Verificação final: distância deve ser baixa mas não excessivamente rigorosa
+    if (bestDistance > 0.4) {
+      console.log(`⚠️ Distância muito alta para segurança adequada: ${bestDistance.toFixed(4)}`);
+      return res.status(401).json({ message: 'Face não reconhecida com segurança adequada' });
     }
 
     // Gerar token JWT
@@ -381,7 +473,12 @@ app.post('/api/auth/face-login', async (req, res) => {
 
     res.cookie('token', token, cookieOptions);
 
-    console.log('✅ Login facial realizado para usuário:', bestMatch.nome);
+    console.log(`✅ Login facial APROVADO para usuário: ${bestMatch.nome}`);
+    console.log(`📊 Métricas finais:`);
+    console.log(`   - Melhor distância: ${bestDistance.toFixed(4)}`);
+    console.log(`   - Média de distâncias: ${bestUserScores.avgDistance.toFixed(4)}`);
+    console.log(`   - Confiança: ${bestUserScores.confidence.toFixed(4)}`);
+    console.log(`   - Consistência: ${bestUserScores.consistency.toFixed(4)}`);
     res.json({
       success: true,
       message: 'Login realizado com sucesso',
