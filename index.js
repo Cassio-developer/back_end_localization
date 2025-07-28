@@ -368,8 +368,8 @@ app.post('/api/auth/face-login', async (req, res) => {
     let bestMatch = null;
     let bestDistance = Infinity;
     let bestUserScores = [];
-    const threshold = 0.45; // Limiar equilibrado entre segurança e usabilidade
-    const minConfidence = 0.75; // Confiança mínima de 75%
+    const threshold = 0.55; // Limiar mais permissivo para teste em produção
+    const minConfidence = 0.65; // Confiança mínima reduzida para teste
 
     console.log(`🔍 Comparando face com ${users.length} usuários...`);
 
@@ -408,11 +408,11 @@ app.post('/api/auth/face-login', async (req, res) => {
 
         console.log(`📈 ${user.nome} - Média: ${avgDistance.toFixed(4)}, Consistência: ${consistency.toFixed(4)}, Confiança: ${confidence.toFixed(4)}`);
 
-        // Critérios equilibrados para aceitar o match
+        // Critérios mais permissivos para teste em produção
         if (userBestDistance < threshold && 
-            avgDistance < threshold * 1.3 && 
+            avgDistance < threshold * 1.5 && 
             confidence > minConfidence &&
-            consistency > 0.6) {
+            consistency > 0.5) {
           
           if (userBestDistance < bestDistance) {
             bestDistance = userBestDistance;
@@ -445,13 +445,13 @@ app.post('/api/auth/face-login', async (req, res) => {
       return res.status(401).json({ message: 'Face não reconhecida com confiança suficiente' });
     }
 
-    if (bestUserScores.consistency < 0.6) {
-      console.log(`❌ Consistência muito baixa: ${bestUserScores.consistency.toFixed(4)} < 0.6`);
+    if (bestUserScores.consistency < 0.5) {
+      console.log(`❌ Consistência muito baixa: ${bestUserScores.consistency.toFixed(4)} < 0.5`);
       return res.status(401).json({ message: 'Face não reconhecida com consistência suficiente' });
     }
 
     // Verificação final: distância deve ser baixa mas não excessivamente rigorosa
-    if (bestDistance > 0.4) {
+    if (bestDistance > 0.5) {
       console.log(`⚠️ Distância muito alta para segurança adequada: ${bestDistance.toFixed(4)}`);
       return res.status(401).json({ message: 'Face não reconhecida com segurança adequada' });
     }
