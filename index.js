@@ -280,19 +280,336 @@ app.patch('/api/users/:id/promote', authenticateToken, requireAdmin, async (req,
 //   }
 // });
 
+// ===== ROTAS DE AUTENTICAÇÃO FACIAL =====
+
+// Rota para registrar dados faciais do usuário
+app.post('/api/auth/register-face', authenticateToken, async (req, res) => {
+  try {
+    const { descriptors } = req.body;
+    
+    if (!descriptors || !Array.isArray(descriptors) || descriptors.length === 0) {
+      return res.status(400).json({ message: 'Dados faciais inválidos' });
+    }
+
+    // Atualizar usuário com dados faciais
+    const user = await User.findByIdAndUpdate(
+      req.user.id,
+      { 
+        faceDescriptors: descriptors,
+        faceDataUpdatedAt: new Date()
+      },
+      { new: true }
+    ).select('-senha +faceDescriptors');
+
+    if (!user) {
+      return res.status(404).json({ message: 'Usuário não encontrado' });
+    }
+
+    console.log('✅ Dados faciais registrados para usuário:', user.nome, 'descriptors:', user.faceDescriptors ? user.faceDescriptors.length : 0);
+    res.json({ 
+      success: true,
+      message: 'Dados faciais registrados com sucesso',
+      userId: user._id
+    });
+  } catch (error) {
+    console.error('❌ Erro ao registrar dados faciais:', error);
+    res.status(500).json({ message: 'Erro interno do servidor' });
+  }
+});
+
+// Rota para login com reconhecimento facial
+app.post('/api/auth/face-login', async (req, res) => {
+  try {
+    const { descriptor } = req.body;
+    
+    if (!descriptor || !Array.isArray(descriptor)) {
+      return res.status(400).json({ message: 'Dados faciais inválidos' });
+    }
+
+    // Verificar se o descritor tem o tamanho correto (128 valores para face-api.js)
+    if (descriptor.length !== 128) {
+      console.log(`❌ Descritor facial inválido - Tamanho: ${descriptor.length}`);
+      return res.status(400).json({ message: 'Dados faciais inválidos' });
+    }
+
+    // Buscar todos os usuários com dados faciais
+    const users = await User.find({ 
+      faceDescriptors: { $exists: true, $ne: [] }
+    }).select('-senha +faceDescriptors');
+
+    if (users.length === 0) {
+      return res.status(401).json({ message: 'Nenhum usuário com dados faciais encontrado' });
+    }
+
+    // Verificar se há pelo menos um descritor válido no sistema
+    let totalDescriptors = 0;
+    for (const user of users) {
+      if (user.faceDescriptors && Array.isArray(user.faceDescriptors)) {
+        totalDescriptors += user.faceDescriptors.length;
+      }
+    }
+
+    if (totalDescriptors === 0) {
+      console.log('❌ Nenhum descritor facial válido encontrado no sistema');
+      return res.status(401).json({ message: 'Sistema de reconhecimento facial não configurado' });
+    }
+
+    // Função para calcular distância euclidiana
+    const euclideanDistance = (desc1, desc2) => {
+      if (desc1.length !== desc2.length) return Infinity;
+      let sum = 0;
+      for (let i = 0; i < desc1.length; i++) {
+        sum += Math.pow(desc1[i] - desc2[i], 2);
+      }
+      return Math.sqrt(sum);
+    };
+
+    // Validação rigorosa com múltiplos critérios
+    let bestMatch = null;
+    let bestDistance = Infinity;
+    let bestUserScores = [];
+    const threshold = 0.45; // Limiar equilibrado entre segurança e usabilidade
+    const minConfidence = 0.75; // Confiança mínima de 75%
+
+    console.log(`🔍 Comparando face com ${users.length} usuários...`);
+
+    for (const user of users) {
+      if (!user.faceDescriptors || !Array.isArray(user.faceDescriptors)) {
+        console.log(`⚠️ Usuário ${user.nome} não tem descritores válidos`);
+        continue;
+      }
+
+      const userDistances = [];
+      let userBestDistance = Infinity;
+
+      // Comparar com todos os descritores do usuário
+      for (let i = 0; i < user.faceDescriptors.length; i++) {
+        const storedDescriptor = user.faceDescriptors[i];
+        if (!Array.isArray(storedDescriptor) || storedDescriptor.length !== 128) {
+          console.log(`⚠️ Descritor inválido para usuário ${user.nome} - índice ${i}`);
+          continue;
+        }
+
+        const distance = euclideanDistance(descriptor, storedDescriptor);
+        userDistances.push(distance);
+        
+        if (distance < userBestDistance) {
+          userBestDistance = distance;
+        }
+
+        console.log(`📊 ${user.nome} - Descritor ${i + 1}: ${distance.toFixed(4)}`);
+      }
+
+      // Calcular confiança baseada na consistência dos descritores
+      if (userDistances.length > 0) {
+        const avgDistance = userDistances.reduce((a, b) => a + b, 0) / userDistances.length;
+        const consistency = 1 - (Math.max(...userDistances) - Math.min(...userDistances));
+        const confidence = Math.max(0, 1 - avgDistance) * consistency;
+
+        console.log(`📈 ${user.nome} - Média: ${avgDistance.toFixed(4)}, Consistência: ${consistency.toFixed(4)}, Confiança: ${confidence.toFixed(4)}`);
+
+        // Critérios equilibrados para aceitar o match
+        if (userBestDistance < threshold && 
+            avgDistance < threshold * 1.3 && 
+            confidence > minConfidence &&
+            consistency > 0.6) {
+          
+          if (userBestDistance < bestDistance) {
+            bestDistance = userBestDistance;
+            bestMatch = user;
+            bestUserScores = {
+              bestDistance: userBestDistance,
+              avgDistance: avgDistance,
+              confidence: confidence,
+              consistency: consistency
+            };
+          }
+        }
+      }
+    }
+
+    // Validação rigorosa com múltiplos critérios
+    if (!bestMatch) {
+      console.log(`❌ Nenhum usuário atende aos critérios rigorosos`);
+      return res.status(401).json({ message: 'Face não reconhecida' });
+    }
+
+    // Verificações finais de segurança
+    if (bestDistance > threshold) {
+      console.log(`❌ Melhor distância (${bestDistance.toFixed(4)}) acima do threshold (${threshold})`);
+      return res.status(401).json({ message: 'Face não reconhecida' });
+    }
+
+    if (bestUserScores.confidence < minConfidence) {
+      console.log(`❌ Confiança muito baixa: ${bestUserScores.confidence.toFixed(4)} < ${minConfidence}`);
+      return res.status(401).json({ message: 'Face não reconhecida com confiança suficiente' });
+    }
+
+    if (bestUserScores.consistency < 0.6) {
+      console.log(`❌ Consistência muito baixa: ${bestUserScores.consistency.toFixed(4)} < 0.6`);
+      return res.status(401).json({ message: 'Face não reconhecida com consistência suficiente' });
+    }
+
+    // Verificação final: distância deve ser baixa mas não excessivamente rigorosa
+    if (bestDistance > 0.4) {
+      console.log(`⚠️ Distância muito alta para segurança adequada: ${bestDistance.toFixed(4)}`);
+      return res.status(401).json({ message: 'Face não reconhecida com segurança adequada' });
+    }
+
+    // Gerar token JWT
+    const token = jwt.sign(
+      { id: bestMatch._id, nome: bestMatch.nome, isAdmin: bestMatch.isAdmin },
+      process.env.JWT_SECRET || 'sua-chave-secreta',
+      { expiresIn: '7d' }
+    );
+
+    // Configurar cookie
+    const cookieOptions = {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === 'production',
+      sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax',
+      maxAge: 7 * 24 * 60 * 60 * 1000 // 7 dias
+    };
+
+    res.cookie('token', token, cookieOptions);
+
+    console.log(`✅ Login facial APROVADO para usuário: ${bestMatch.nome}`);
+    console.log(`📊 Métricas finais:`);
+    console.log(`   - Melhor distância: ${bestDistance.toFixed(4)}`);
+    console.log(`   - Média de distâncias: ${bestUserScores.avgDistance.toFixed(4)}`);
+    console.log(`   - Confiança: ${bestUserScores.confidence.toFixed(4)}`);
+    console.log(`   - Consistência: ${bestUserScores.consistency.toFixed(4)}`);
+    res.json({
+      success: true,
+      message: 'Login realizado com sucesso',
+      user: {
+        id: bestMatch._id,
+        nome: bestMatch.nome,
+        isAdmin: bestMatch.isAdmin,
+        avatar: bestMatch.avatar
+      },
+      token
+    });
+  } catch (error) {
+    console.error('❌ Erro no login facial:', error);
+    res.status(500).json({ message: 'Erro interno do servidor' });
+  }
+});
+
+// Rota para verificar se usuário tem dados faciais
+app.get('/api/auth/face-data', authenticateToken, async (req, res) => {
+  try {
+    const user = await User.findById(req.user.id).select('-senha +faceDescriptors');
+    
+    if (!user) {
+      return res.status(404).json({ message: 'Usuário não encontrado' });
+    }
+
+    const hasFaceData = user.faceDescriptors && user.faceDescriptors.length > 0;
+    
+    console.log('🔍 Verificando dados faciais para usuário:', user.nome, 'hasFaceData:', hasFaceData, 'descriptors:', user.faceDescriptors ? user.faceDescriptors.length : 0);
+    
+    res.json({
+      success: true,
+      hasFaceData,
+      message: hasFaceData ? 'Usuário possui dados faciais' : 'Usuário não possui dados faciais'
+    });
+  } catch (error) {
+    console.error('❌ Erro ao verificar dados faciais:', error);
+    res.status(500).json({ message: 'Erro interno do servidor' });
+  }
+});
+
+// Rota para remover dados faciais
+app.delete('/api/auth/remove-face', authenticateToken, async (req, res) => {
+  try {
+    const user = await User.findByIdAndUpdate(
+      req.user.id,
+      { 
+        $unset: { faceDescriptors: 1, faceDataUpdatedAt: 1 }
+      },
+      { new: true }
+    ).select('-senha');
+
+    if (!user) {
+      return res.status(404).json({ message: 'Usuário não encontrado' });
+    }
+
+    console.log('✅ Dados faciais removidos para usuário:', user.nome);
+    res.json({
+      success: true,
+      message: 'Dados faciais removidos com sucesso'
+    });
+  } catch (error) {
+    console.error('❌ Erro ao remover dados faciais:', error);
+    res.status(500).json({ message: 'Erro interno do servidor' });
+  }
+});
+
+// Rota para atualizar dados faciais
+app.put('/api/auth/update-face', authenticateToken, async (req, res) => {
+  try {
+    const { descriptors } = req.body;
+    
+    if (!descriptors || !Array.isArray(descriptors) || descriptors.length === 0) {
+      return res.status(400).json({ message: 'Dados faciais inválidos' });
+    }
+
+    const user = await User.findByIdAndUpdate(
+      req.user.id,
+      { 
+        faceDescriptors: descriptors,
+        faceDataUpdatedAt: new Date()
+      },
+      { new: true }
+    ).select('-senha +faceDescriptors');
+
+    if (!user) {
+      return res.status(404).json({ message: 'Usuário não encontrado' });
+    }
+
+    console.log('✅ Dados faciais atualizados para usuário:', user.nome, 'descriptors:', user.faceDescriptors ? user.faceDescriptors.length : 0);
+    res.json({
+      success: true,
+      message: 'Dados faciais atualizados com sucesso'
+    });
+  } catch (error) {
+    console.error('❌ Erro ao atualizar dados faciais:', error);
+    res.status(500).json({ message: 'Erro interno do servidor' });
+  }
+});
+
+// ===== FIM DAS ROTAS DE AUTENTICAÇÃO FACIAL =====
+
 // Socket.io para rastreamento em tempo real
 const localizacoes = {};
 const usuariosConectados = {};
 
 io.on('connection', (socket) => {
+  console.log('🔌 Nova conexão socket:', socket.id);
+  
   // Recebe identificação do usuário
   socket.on('identificacao', (userData) => {
+    console.log('👤 Usuário identificado:', userData.nome, 'Admin:', userData.isAdmin, 'Socket:', socket.id);
+    
     usuariosConectados[socket.id] = {
       ...userData,
       socketId: socket.id
     };
-    // Se for admin, envie a lista de conectados
+    
+    console.log('📊 Total de usuários conectados:', Object.keys(usuariosConectados).length);
+    
+    // Notificar TODOS os admins sobre a nova conexão
+    Object.values(usuariosConectados).forEach(user => {
+      if (user.isAdmin && user.socketId !== socket.id) {
+        console.log('📢 Notificando admin:', user.nome, 'sobre nova conexão');
+        io.to(user.socketId).emit('usuariosConectados', Object.values(usuariosConectados));
+      }
+    });
+    
+    // Se o usuário que acabou de conectar é admin, envie a lista completa
     if (userData.isAdmin) {
+      console.log('👑 Admin conectado, enviando lista de usuários:', Object.values(usuariosConectados).length);
       socket.emit('usuariosConectados', Object.values(usuariosConectados));
     }
   });
@@ -315,14 +632,22 @@ io.on('connection', (socket) => {
 
   // Usuário desconectado
   socket.on('disconnect', () => {
+    const userInfo = usuariosConectados[socket.id];
+    console.log('🔌 Usuário desconectado:', userInfo?.nome || 'Desconhecido', 'Socket:', socket.id);
+    
     delete localizacoes[socket.id];
     delete usuariosConectados[socket.id];
-    // Notificar admins conectados sobre a saída (opcional)
-    // Object.values(usuariosConectados).forEach(user => {
-    //   if (user.isAdmin) {
-    //     io.to(user.socketId).emit('usuariosConectados', Object.values(usuariosConectados));
-    //   }
-    // });
+    
+    console.log('📊 Total de usuários conectados após desconexão:', Object.keys(usuariosConectados).length);
+    
+    // Notificar TODOS os admins sobre a desconexão
+    Object.values(usuariosConectados).forEach(user => {
+      if (user.isAdmin) {
+        console.log('📢 Notificando admin:', user.nome, 'sobre desconexão');
+        io.to(user.socketId).emit('usuariosConectados', Object.values(usuariosConectados));
+      }
+    });
+    
     socket.broadcast.emit('usuarioDesconectado', socket.id);
   });
 });
