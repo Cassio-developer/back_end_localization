@@ -592,10 +592,29 @@ io.on('connection', (socket) => {
       ...data,
       timestamp: Date.now()
     };
+    
+    // Atualizar dados do usuário conectado com localização
+    if (usuariosConectados[socket.id]) {
+      usuariosConectados[socket.id] = {
+        ...usuariosConectados[socket.id],
+        latitude: data.latitude,
+        longitude: data.longitude,
+        accuracy: data.accuracy,
+        lastLocationUpdate: Date.now()
+      };
+    }
+    
     // Enviar para todos os outros usuários
     socket.broadcast.emit('localizacao', {
       id: socket.id,
       ...localizacoes[socket.id]
+    });
+    
+    // Notificar admins sobre atualização de localização
+    Object.values(usuariosConectados).forEach(user => {
+      if (user.isAdmin && user.socketId !== socket.id) {
+        io.to(user.socketId).emit('usuariosConectados', Object.values(usuariosConectados));
+      }
     });
   });
 
@@ -620,14 +639,14 @@ io.on('connection', (socket) => {
 // Endpoint para registrar localização do usuário
 app.post('/api/locations', authenticateToken, async (req, res) => {
   try {
-    const { lat, lng, accuracy, timestamp } = req.body;
-    if (!lat || !lng || !timestamp) {
+    const { latitude, longitude, accuracy, timestamp } = req.body;
+    if (!latitude || !longitude || !timestamp) {
       return res.status(400).json({ message: 'Dados de localização incompletos' });
     }
     const location = new Location({
       userId: req.user.id,
-      lat,
-      lng,
+      latitude,
+      longitude,
       accuracy,
       timestamp: new Date(timestamp)
     });

@@ -6,14 +6,6 @@ const LocationSchema = new mongoose.Schema({
     ref: 'User',
     required: true
   },
-  lat: {
-    type: Number,
-    required: true
-  },
-  lng: {
-    type: Number,
-    required: true
-  },
   latitude: {
     type: Number,
     required: true
