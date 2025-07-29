@@ -39,7 +39,7 @@ const UserSchema = new mongoose.Schema({
 });
 
 // Índices para otimizar consultas
-UserSchema.index({ nome: 1 });
+// UserSchema.index({ nome: 1 }); // REMOVIDO - já existe unique: true
 UserSchema.index({ isAdmin: 1 });
 UserSchema.index({ 'faceDescriptors.0': { $exists: true } }); // Índice para usuários com dados faciais
 

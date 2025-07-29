@@ -13,6 +13,12 @@ const User = require('./models/User');
 const app = express();
 const server = createServer(app);
 
+// Configuração de variáveis de ambiente
+const BACKGROUND_SYNC_ENABLED = process.env.BACKGROUND_SYNC_ENABLED === 'true';
+const BACKGROUND_SYNC_INTERVAL = parseInt(process.env.BACKGROUND_SYNC_INTERVAL || '30000');
+const LOCATION_CACHE_SIZE = parseInt(process.env.LOCATION_CACHE_SIZE || '100');
+const SYNC_BATCH_SIZE = parseInt(process.env.SYNC_BATCH_SIZE || '10');
+
 // Configuração de CORS mais flexível
 const allowedOrigins = [
   'http://localhost:3000',
@@ -46,12 +52,9 @@ const isOriginAllowed = (origin) => {
 const io = new Server(server, {
   cors: {
     origin: function (origin, callback) {
-      console.log('Socket.io CORS check - Origin:', origin);
-      
       if (isOriginAllowed(origin)) {
         callback(null, true);
       } else {
-        console.log('Socket.io CORS blocked - Origin:', origin);
         callback(new Error('Not allowed by CORS'));
       }
     },
@@ -62,12 +65,9 @@ const io = new Server(server, {
 // Middleware
 app.use(cors({
   origin: function (origin, callback) {
-    console.log('Express CORS check - Origin:', origin);
-    
     if (isOriginAllowed(origin)) {
       callback(null, true);
     } else {
-      console.log('Express CORS blocked - Origin:', origin);
       callback(new Error('Not allowed by CORS'));
     }
   },
@@ -81,6 +81,15 @@ app.use(cookieParser());
 // Rota de teste simples
 app.get('/test', (req, res) => {
   res.json({ message: 'Backend funcionando!' });
+});
+
+// Rota para verificar usuários conectados (apenas para debug)
+app.get('/debug/usuarios', (req, res) => {
+  res.json({
+    totalUsuarios: Object.keys(usuariosConectados).length,
+    usuarios: Object.values(usuariosConectados),
+    localizacoes: Object.keys(localizacoes).length
+  });
 });
 
 // Conectar ao MongoDB      'mongodb://localhost:27017/rastreamento-gps'
@@ -195,8 +204,6 @@ app.post('/api/auth/login', async (req, res) => {
 });
 
 app.post('/api/auth/logout', (req, res) => {
-  console.log('Logout solicitado - Origin:', req.headers.origin);
-  
   // Limpar o cookie com as mesmas opções usadas no login
   const cookieOptions = {
     httpOnly: true,
@@ -207,8 +214,6 @@ app.post('/api/auth/logout', (req, res) => {
     maxAge: 0 // Forçar expiração imediata
   };
   
-  console.log('Opções do cookie para limpeza:', cookieOptions);
-  
   res.clearCookie('token', cookieOptions);
   
   // Adicionar headers adicionais para garantir que o cookie seja removido
@@ -217,7 +222,6 @@ app.post('/api/auth/logout', (req, res) => {
     (process.env.NODE_ENV === 'production' ? 'Secure; SameSite=None' : 'SameSite=Lax')
   ]);
   
-  console.log('Cookie removido com sucesso');
   res.json({ message: 'Logout realizado com sucesso' });
 });
 
@@ -305,7 +309,6 @@ app.post('/api/auth/register-face', authenticateToken, async (req, res) => {
       return res.status(404).json({ message: 'Usuário não encontrado' });
     }
 
-    console.log('✅ Dados faciais registrados para usuário:', user.nome, 'descriptors:', user.faceDescriptors ? user.faceDescriptors.length : 0);
     res.json({ 
       success: true,
       message: 'Dados faciais registrados com sucesso',
@@ -328,7 +331,6 @@ app.post('/api/auth/face-login', async (req, res) => {
 
     // Verificar se o descritor tem o tamanho correto (128 valores para face-api.js)
     if (descriptor.length !== 128) {
-      console.log(`❌ Descritor facial inválido - Tamanho: ${descriptor.length}`);
       return res.status(400).json({ message: 'Dados faciais inválidos' });
     }
 
@@ -350,7 +352,6 @@ app.post('/api/auth/face-login', async (req, res) => {
     }
 
     if (totalDescriptors === 0) {
-      console.log('❌ Nenhum descritor facial válido encontrado no sistema');
       return res.status(401).json({ message: 'Sistema de reconhecimento facial não configurado' });
     }
 
@@ -371,11 +372,8 @@ app.post('/api/auth/face-login', async (req, res) => {
     const threshold = 0.55; // Limiar mais permissivo para teste em produção
     const minConfidence = 0.65; // Confiança mínima reduzida para teste
 
-    console.log(`🔍 Comparando face com ${users.length} usuários...`);
-
     for (const user of users) {
       if (!user.faceDescriptors || !Array.isArray(user.faceDescriptors)) {
-        console.log(`⚠️ Usuário ${user.nome} não tem descritores válidos`);
         continue;
       }
 
@@ -386,7 +384,6 @@ app.post('/api/auth/face-login', async (req, res) => {
       for (let i = 0; i < user.faceDescriptors.length; i++) {
         const storedDescriptor = user.faceDescriptors[i];
         if (!Array.isArray(storedDescriptor) || storedDescriptor.length !== 128) {
-          console.log(`⚠️ Descritor inválido para usuário ${user.nome} - índice ${i}`);
           continue;
         }
 
@@ -396,8 +393,6 @@ app.post('/api/auth/face-login', async (req, res) => {
         if (distance < userBestDistance) {
           userBestDistance = distance;
         }
-
-        console.log(`📊 ${user.nome} - Descritor ${i + 1}: ${distance.toFixed(4)}`);
       }
 
       // Calcular confiança baseada na consistência dos descritores
@@ -405,8 +400,6 @@ app.post('/api/auth/face-login', async (req, res) => {
         const avgDistance = userDistances.reduce((a, b) => a + b, 0) / userDistances.length;
         const consistency = 1 - (Math.max(...userDistances) - Math.min(...userDistances));
         const confidence = Math.max(0, 1 - avgDistance) * consistency;
-
-        console.log(`📈 ${user.nome} - Média: ${avgDistance.toFixed(4)}, Consistência: ${consistency.toFixed(4)}, Confiança: ${confidence.toFixed(4)}`);
 
         // Critérios mais permissivos para teste em produção
         if (userBestDistance < threshold && 
@@ -430,29 +423,24 @@ app.post('/api/auth/face-login', async (req, res) => {
 
     // Validação rigorosa com múltiplos critérios
     if (!bestMatch) {
-      console.log(`❌ Nenhum usuário atende aos critérios rigorosos`);
       return res.status(401).json({ message: 'Face não reconhecida' });
     }
 
     // Verificações finais de segurança
     if (bestDistance > threshold) {
-      console.log(`❌ Melhor distância (${bestDistance.toFixed(4)}) acima do threshold (${threshold})`);
       return res.status(401).json({ message: 'Face não reconhecida' });
     }
 
     if (bestUserScores.confidence < minConfidence) {
-      console.log(`❌ Confiança muito baixa: ${bestUserScores.confidence.toFixed(4)} < ${minConfidence}`);
       return res.status(401).json({ message: 'Face não reconhecida com confiança suficiente' });
     }
 
     if (bestUserScores.consistency < 0.5) {
-      console.log(`❌ Consistência muito baixa: ${bestUserScores.consistency.toFixed(4)} < 0.5`);
       return res.status(401).json({ message: 'Face não reconhecida com consistência suficiente' });
     }
 
     // Verificação final: distância deve ser baixa mas não excessivamente rigorosa
     if (bestDistance > 0.5) {
-      console.log(`⚠️ Distância muito alta para segurança adequada: ${bestDistance.toFixed(4)}`);
       return res.status(401).json({ message: 'Face não reconhecida com segurança adequada' });
     }
 
@@ -473,12 +461,6 @@ app.post('/api/auth/face-login', async (req, res) => {
 
     res.cookie('token', token, cookieOptions);
 
-    console.log(`✅ Login facial APROVADO para usuário: ${bestMatch.nome}`);
-    console.log(`📊 Métricas finais:`);
-    console.log(`   - Melhor distância: ${bestDistance.toFixed(4)}`);
-    console.log(`   - Média de distâncias: ${bestUserScores.avgDistance.toFixed(4)}`);
-    console.log(`   - Confiança: ${bestUserScores.confidence.toFixed(4)}`);
-    console.log(`   - Consistência: ${bestUserScores.consistency.toFixed(4)}`);
     res.json({
       success: true,
       message: 'Login realizado com sucesso',
@@ -507,8 +489,6 @@ app.get('/api/auth/face-data', authenticateToken, async (req, res) => {
 
     const hasFaceData = user.faceDescriptors && user.faceDescriptors.length > 0;
     
-    console.log('🔍 Verificando dados faciais para usuário:', user.nome, 'hasFaceData:', hasFaceData, 'descriptors:', user.faceDescriptors ? user.faceDescriptors.length : 0);
-    
     res.json({
       success: true,
       hasFaceData,
@@ -535,7 +515,6 @@ app.delete('/api/auth/remove-face', authenticateToken, async (req, res) => {
       return res.status(404).json({ message: 'Usuário não encontrado' });
     }
 
-    console.log('✅ Dados faciais removidos para usuário:', user.nome);
     res.json({
       success: true,
       message: 'Dados faciais removidos com sucesso'
@@ -568,7 +547,6 @@ app.put('/api/auth/update-face', authenticateToken, async (req, res) => {
       return res.status(404).json({ message: 'Usuário não encontrado' });
     }
 
-    console.log('✅ Dados faciais atualizados para usuário:', user.nome, 'descriptors:', user.faceDescriptors ? user.faceDescriptors.length : 0);
     res.json({
       success: true,
       message: 'Dados faciais atualizados com sucesso'
@@ -586,30 +564,21 @@ const localizacoes = {};
 const usuariosConectados = {};
 
 io.on('connection', (socket) => {
-  console.log('🔌 Nova conexão socket:', socket.id);
-  
-  // Recebe identificação do usuário
   socket.on('identificacao', (userData) => {
-    console.log('👤 Usuário identificado:', userData.nome, 'Admin:', userData.isAdmin, 'Socket:', socket.id);
-    
     usuariosConectados[socket.id] = {
       ...userData,
       socketId: socket.id
     };
     
-    console.log('📊 Total de usuários conectados:', Object.keys(usuariosConectados).length);
-    
     // Notificar TODOS os admins sobre a nova conexão
     Object.values(usuariosConectados).forEach(user => {
       if (user.isAdmin && user.socketId !== socket.id) {
-        console.log('📢 Notificando admin:', user.nome, 'sobre nova conexão');
         io.to(user.socketId).emit('usuariosConectados', Object.values(usuariosConectados));
       }
     });
     
     // Se o usuário que acabou de conectar é admin, envie a lista completa
     if (userData.isAdmin) {
-      console.log('👑 Admin conectado, enviando lista de usuários:', Object.values(usuariosConectados).length);
       socket.emit('usuariosConectados', Object.values(usuariosConectados));
     }
   });
@@ -633,17 +602,13 @@ io.on('connection', (socket) => {
   // Usuário desconectado
   socket.on('disconnect', () => {
     const userInfo = usuariosConectados[socket.id];
-    console.log('🔌 Usuário desconectado:', userInfo?.nome || 'Desconhecido', 'Socket:', socket.id);
     
     delete localizacoes[socket.id];
     delete usuariosConectados[socket.id];
     
-    console.log('📊 Total de usuários conectados após desconexão:', Object.keys(usuariosConectados).length);
-    
     // Notificar TODOS os admins sobre a desconexão
     Object.values(usuariosConectados).forEach(user => {
       if (user.isAdmin) {
-        console.log('📢 Notificando admin:', user.nome, 'sobre desconexão');
         io.to(user.socketId).emit('usuariosConectados', Object.values(usuariosConectados));
       }
     });
@@ -689,6 +654,66 @@ app.get('/api/locations', authenticateToken, async (req, res) => {
   } catch (error) {
     console.error('Erro ao buscar histórico de localizações:', error);
     res.status(500).json({ message: 'Erro interno do servidor' });
+  }
+});
+
+// Rota para sincronização de localização (Background Sync)
+app.post('/api/location/sync', authenticateToken, async (req, res) => {
+  try {
+    // Verificar se background sync está habilitado
+    if (!BACKGROUND_SYNC_ENABLED) {
+      return res.status(503).json({ 
+        success: false, 
+        message: 'Background Sync está desabilitado' 
+      });
+    }
+
+    const { latitude, longitude, accuracy, timestamp, userId } = req.body;
+    const tokenUserId = req.user.id;
+
+    // Verificar se o usuário está enviando sua própria localização
+    if (userId !== tokenUserId) {
+      return res.status(403).json({ 
+        success: false, 
+        message: 'Não autorizado a enviar localização de outro usuário' 
+      });
+    }
+
+    // Validar dados
+    if (!latitude || !longitude || !accuracy || !timestamp) {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'Dados de localização incompletos' 
+      });
+    }
+
+    // Salvar localização no banco
+    const location = new Location({
+      userId: tokenUserId,
+      latitude,
+      longitude,
+      accuracy,
+      timestamp: new Date(timestamp),
+      source: 'background-sync'
+    });
+
+    await location.save();
+
+    res.json({ 
+      success: true, 
+      message: 'Localização sincronizada com sucesso',
+      location: {
+        id: location._id,
+        timestamp: location.timestamp
+      }
+    });
+
+  } catch (error) {
+    console.error('❌ Erro na sincronização de localização:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Erro interno no servidor' 
+    });
   }
 });
 
