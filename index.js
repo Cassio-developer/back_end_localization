@@ -94,8 +94,12 @@ app.get('/debug/usuarios', (req, res) => {
 
 // Conectar ao MongoDB      'mongodb://localhost:27017/rastreamento-gps'
 mongoose.connect(process.env.MONGO_URI || 'mongodb://localhost:27017/rastreamento-gps')
-  .then(() => console.log('Conectado ao MongoDB'))
-  .catch(err => console.error('Erro ao conectar ao MongoDB:', err));
+  .then(() => {
+    // Conectado ao MongoDB
+  })
+  .catch((error) => {
+    console.error('Erro ao conectar ao MongoDB:', error);
+  });
 
 // Middleware de autenticação JWT
 const authenticateToken = (req, res, next) => {
@@ -592,10 +596,29 @@ io.on('connection', (socket) => {
       ...data,
       timestamp: Date.now()
     };
+    
+    // Atualizar dados do usuário conectado com localização
+    if (usuariosConectados[socket.id]) {
+      usuariosConectados[socket.id] = {
+        ...usuariosConectados[socket.id],
+        latitude: data.latitude,
+        longitude: data.longitude,
+        accuracy: data.accuracy,
+        lastLocationUpdate: Date.now()
+      };
+    }
+    
     // Enviar para todos os outros usuários
     socket.broadcast.emit('localizacao', {
       id: socket.id,
       ...localizacoes[socket.id]
+    });
+    
+    // Notificar admins sobre atualização de localização
+    Object.values(usuariosConectados).forEach(user => {
+      if (user.isAdmin && user.socketId !== socket.id) {
+        io.to(user.socketId).emit('usuariosConectados', Object.values(usuariosConectados));
+      }
     });
   });
 
@@ -620,14 +643,14 @@ io.on('connection', (socket) => {
 // Endpoint para registrar localização do usuário
 app.post('/api/locations', authenticateToken, async (req, res) => {
   try {
-    const { lat, lng, accuracy, timestamp } = req.body;
-    if (!lat || !lng || !timestamp) {
+    const { latitude, longitude, accuracy, timestamp } = req.body;
+    if (!latitude || !longitude || !timestamp) {
       return res.status(400).json({ message: 'Dados de localização incompletos' });
     }
     const location = new Location({
       userId: req.user.id,
-      lat,
-      lng,
+      latitude,
+      longitude,
       accuracy,
       timestamp: new Date(timestamp)
     });
@@ -744,5 +767,5 @@ app.patch('/api/users/me/avatar', authenticateToken, async (req, res) => {
 
 const PORT = process.env.PORT || 4000;
 server.listen(PORT, () => {
-  console.log(`Servidor rodando na porta ${PORT}`);
+  // Servidor rodando na porta ${PORT}
 }); 
