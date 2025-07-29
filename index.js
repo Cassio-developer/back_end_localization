@@ -13,6 +13,18 @@ const User = require('./models/User');
 const app = express();
 const server = createServer(app);
 
+// Configuração de variáveis de ambiente
+const BACKGROUND_SYNC_ENABLED = process.env.BACKGROUND_SYNC_ENABLED === 'true';
+const BACKGROUND_SYNC_INTERVAL = parseInt(process.env.BACKGROUND_SYNC_INTERVAL || '30000');
+const LOCATION_CACHE_SIZE = parseInt(process.env.LOCATION_CACHE_SIZE || '100');
+const SYNC_BATCH_SIZE = parseInt(process.env.SYNC_BATCH_SIZE || '10');
+
+console.log('🔧 Configurações do Backend:');
+console.log('  - Background Sync:', BACKGROUND_SYNC_ENABLED ? '✅ Habilitado' : '❌ Desabilitado');
+console.log('  - Intervalo de Sync:', BACKGROUND_SYNC_INTERVAL, 'ms');
+console.log('  - Tamanho do Cache:', LOCATION_CACHE_SIZE, 'localizações');
+console.log('  - Tamanho do Lote:', SYNC_BATCH_SIZE, 'por sincronização');
+
 // Configuração de CORS mais flexível
 const allowedOrigins = [
   'http://localhost:3000',
@@ -81,6 +93,15 @@ app.use(cookieParser());
 // Rota de teste simples
 app.get('/test', (req, res) => {
   res.json({ message: 'Backend funcionando!' });
+});
+
+// Rota para verificar usuários conectados (apenas para debug)
+app.get('/debug/usuarios', (req, res) => {
+  res.json({
+    totalUsuarios: Object.keys(usuariosConectados).length,
+    usuarios: Object.values(usuariosConectados),
+    localizacoes: Object.keys(localizacoes).length
+  });
 });
 
 // Conectar ao MongoDB      'mongodb://localhost:27017/rastreamento-gps'
@@ -591,6 +612,8 @@ io.on('connection', (socket) => {
   // Recebe identificação do usuário
   socket.on('identificacao', (userData) => {
     console.log('👤 Usuário identificado:', userData.nome, 'Admin:', userData.isAdmin, 'Socket:', socket.id);
+    console.log('📊 Dados completos recebidos:', userData);
+    console.log('🌐 Ambiente:', process.env.NODE_ENV);
     
     usuariosConectados[socket.id] = {
       ...userData,
@@ -598,6 +621,7 @@ io.on('connection', (socket) => {
     };
     
     console.log('📊 Total de usuários conectados:', Object.keys(usuariosConectados).length);
+    console.log('📋 Lista completa de usuários conectados:', Object.values(usuariosConectados));
     
     // Notificar TODOS os admins sobre a nova conexão
     Object.values(usuariosConectados).forEach(user => {
@@ -610,6 +634,7 @@ io.on('connection', (socket) => {
     // Se o usuário que acabou de conectar é admin, envie a lista completa
     if (userData.isAdmin) {
       console.log('👑 Admin conectado, enviando lista de usuários:', Object.values(usuariosConectados).length);
+      console.log('📋 Lista completa de usuários:', Object.values(usuariosConectados));
       socket.emit('usuariosConectados', Object.values(usuariosConectados));
     }
   });
@@ -634,11 +659,13 @@ io.on('connection', (socket) => {
   socket.on('disconnect', () => {
     const userInfo = usuariosConectados[socket.id];
     console.log('🔌 Usuário desconectado:', userInfo?.nome || 'Desconhecido', 'Socket:', socket.id);
+    console.log('👑 Era admin?', userInfo?.isAdmin);
     
     delete localizacoes[socket.id];
     delete usuariosConectados[socket.id];
     
     console.log('📊 Total de usuários conectados após desconexão:', Object.keys(usuariosConectados).length);
+    console.log('📋 Lista atualizada de usuários:', Object.values(usuariosConectados));
     
     // Notificar TODOS os admins sobre a desconexão
     Object.values(usuariosConectados).forEach(user => {
@@ -689,6 +716,68 @@ app.get('/api/locations', authenticateToken, async (req, res) => {
   } catch (error) {
     console.error('Erro ao buscar histórico de localizações:', error);
     res.status(500).json({ message: 'Erro interno do servidor' });
+  }
+});
+
+// Rota para sincronização de localização (Background Sync)
+app.post('/api/location/sync', authenticateToken, async (req, res) => {
+  try {
+    // Verificar se background sync está habilitado
+    if (!BACKGROUND_SYNC_ENABLED) {
+      return res.status(503).json({ 
+        success: false, 
+        message: 'Background Sync está desabilitado' 
+      });
+    }
+
+    const { latitude, longitude, accuracy, timestamp, userId } = req.body;
+    const tokenUserId = req.user.id;
+
+    // Verificar se o usuário está enviando sua própria localização
+    if (userId !== tokenUserId) {
+      return res.status(403).json({ 
+        success: false, 
+        message: 'Não autorizado a enviar localização de outro usuário' 
+      });
+    }
+
+    // Validar dados
+    if (!latitude || !longitude || !accuracy || !timestamp) {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'Dados de localização incompletos' 
+      });
+    }
+
+    // Salvar localização no banco
+    const location = new Location({
+      userId: tokenUserId,
+      latitude,
+      longitude,
+      accuracy,
+      timestamp: new Date(timestamp),
+      source: 'background-sync'
+    });
+
+    await location.save();
+
+    console.log(`✅ Localização sincronizada via Background Sync - Usuário: ${tokenUserId}`);
+
+    res.json({ 
+      success: true, 
+      message: 'Localização sincronizada com sucesso',
+      location: {
+        id: location._id,
+        timestamp: location.timestamp
+      }
+    });
+
+  } catch (error) {
+    console.error('❌ Erro na sincronização de localização:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Erro interno no servidor' 
+    });
   }
 });
 
