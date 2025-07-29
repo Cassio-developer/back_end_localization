@@ -94,8 +94,12 @@ app.get('/debug/usuarios', (req, res) => {
 
 // Conectar ao MongoDB      'mongodb://localhost:27017/rastreamento-gps'
 mongoose.connect(process.env.MONGO_URI || 'mongodb://localhost:27017/rastreamento-gps')
-  .then(() => console.log('Conectado ao MongoDB'))
-  .catch(err => console.error('Erro ao conectar ao MongoDB:', err));
+  .then(() => {
+    // Conectado ao MongoDB
+  })
+  .catch((error) => {
+    console.error('Erro ao conectar ao MongoDB:', error);
+  });
 
 // Middleware de autenticação JWT
 const authenticateToken = (req, res, next) => {
@@ -763,5 +767,5 @@ app.patch('/api/users/me/avatar', authenticateToken, async (req, res) => {
 
 const PORT = process.env.PORT || 4000;
 server.listen(PORT, () => {
-  console.log(`Servidor rodando na porta ${PORT}`);
+  // Servidor rodando na porta ${PORT}
 }); 
